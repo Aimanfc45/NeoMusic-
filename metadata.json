@@ -1,0 +1,6 @@
+{
+  "name": "NeoMusic",
+  "description": "Premium dark-themed music streaming and dynamic crypto wallet application with daily streak bonuses and audio controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
