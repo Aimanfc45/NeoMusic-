@@ -22,6 +22,7 @@ workflows:
     scripts:
       - name: Sediakan fail kebenaran Gradle wrapper
         script: |
+          gradle wrapper
           chmod +x gradlew
       - name: Jalankan Unit Tests & Linter Latihan
         script: |
