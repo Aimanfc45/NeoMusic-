@@ -7,7 +7,6 @@ workflows:
     max_build_duration: 60
     instance_type: mac_mini_m1 # Boleh juga menggunakan linux_arm64 atau linux untuk binaan yang laju
     environment:
-      android_ndk: 25.2.9519653
       java: 17
       groups:
         # Masukkan kumpulan pemboleh ubah persekitaran (Environment Variables) jika ada di Dashboard Codemagic
