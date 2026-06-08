@@ -49,7 +49,8 @@ data class Track(
     val artist: String,
     val duration: String,
     val durationSec: Int,
-    val accentColor: Color
+    val accentColor: Color,
+    val audioUrl: String
 )
 
 class MainActivity : ComponentActivity() {
@@ -117,28 +118,58 @@ fun NeoMusicApp() {
         colors = if (neonGlowEnabled) listOf(NeonPurple, NeonOrchid) else listOf(DullGrey, CardSurface)
     )
 
-    // Tracks List
+    // Tracks List with stable public MP3/HLS Streaming URLs for Fasa 2.9 (Radio Syok & Live)
     val tracksList = remember {
         listOf(
-            Track(1, "Midnight Cyberwave", "Solar Hacker", "03:42", 222, Color(0xFFBD00FF)),
-            Track(2, "Ethereum Horizon", "Crypto Saws", "04:15", 255, Color(0xFFFFB703)),
-            Track(3, "Deep Black Symphony", "The Miner", "02:58", 178, Color(0xFF00E5FF)),
-            Track(4, "Polkadot Romance", "Substrate", "05:04", 304, Color(0xFFFF00D6)),
-            Track(5, "Solana Speedrunner", "MemeKing", "03:12", 192, Color(0xFF14F195))
+            Track(1, "ERA FM (Muzik Melayu)", "Syok Radio Live", "LIVE", 0, Color(0xFFFF00D6), "https://playerservices.streamtheworld.com/api/livestream-redirect/ERAFM.mp3"),
+            Track(2, "SINAR FM (Nusantara Klasik)", "Syok Sinar Klasik", "LIVE", 0, Color(0xFFBD00FF), "https://playerservices.streamtheworld.com/api/livestream-redirect/SINARFM.mp3"),
+            Track(3, "HITZ FM (English Pop)", "Syok Top 40 Hits", "LIVE", 0, Color(0xFF00E5FF), "https://playerservices.streamtheworld.com/api/livestream-redirect/HITZFM.mp3"),
+            Track(4, "MIX FM (Classic Rock/Pop)", "Syok Classic Retro", "LIVE", 0, Color(0xFFFFB703), "https://playerservices.streamtheworld.com/api/livestream-redirect/MIXFM.mp3")
         )
+    }
+
+    var searchQuery by remember { mutableStateOf("") }
+    val filteredTracks = remember(searchQuery) {
+        if (searchQuery.isBlank()) {
+            tracksList
+        } else {
+            tracksList.filter {
+                it.title.contains(searchQuery, ignoreCase = true) ||
+                it.artist.contains(searchQuery, ignoreCase = true)
+            }
+        }
     }
     
     val currentTrack = tracksList[currentTrackIndex]
 
-    // Audio Playback Ticker Simulation
-    LaunchedEffect(isPlaying, currentTrackIndex) {
-        if (isPlaying) {
-            while (isPlaying) {
-                delay(1000L)
-                if (currentSongProgress < currentTrack.durationSec) {
-                    currentSongProgress++
-                    totalSecondsListened++
-                } else {
+    // Configure HttpDataSource.Factory with user-agent representation
+    val httpDataSourceFactory = remember {
+        androidx.media3.datasource.DefaultHttpDataSource.Factory()
+            .setUserAgent("Mozilla/5.0 (Linux; Android 11; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.74 Mobile Safari/537.36")
+            .setAllowCrossProtocolRedirects(true)
+    }
+
+    // Configure standard dynamic MediaSource.Factory to auto-detect both progressive MP3s and HLS penstriman langsung
+    val mediaSourceFactory = remember {
+        androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
+            .setDataSourceFactory(httpDataSourceFactory)
+    }
+
+    // Initialize ExoPlayer with the customized mediaSourceFactory
+    val exoPlayer = remember {
+        androidx.media3.exoplayer.ExoPlayer.Builder(context)
+            .setMediaSourceFactory(mediaSourceFactory)
+            .build()
+    }
+
+    // Set ExoPlayer list playback state listener, also syncing isPlaying from source-of-truth onIsPlayingChanged
+    DisposableEffect(exoPlayer) {
+        val listener = object : androidx.media3.common.Player.Listener {
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+            }
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == androidx.media3.common.Player.STATE_ENDED) {
                     if (autoPlayNext) {
                         currentTrackIndex = (currentTrackIndex + 1) % tracksList.size
                         currentSongProgress = 0
@@ -146,6 +177,84 @@ fun NeoMusicApp() {
                         isPlaying = false
                         currentSongProgress = 0
                     }
+                }
+            }
+        }
+        exoPlayer.addListener(listener)
+        onDispose {
+            exoPlayer.removeListener(listener)
+        }
+    }
+
+    // Ensure safe release of ExoPlayer
+    DisposableEffect(Unit) {
+        onDispose {
+            exoPlayer.release()
+        }
+    }
+
+    // Prepare and play media source when track changes
+    LaunchedEffect(currentTrackIndex) {
+        val track = tracksList[currentTrackIndex]
+        
+        // Let ExoPlayer handle type discovery or fall back to MimeTypes detection
+        val mimeType = if (track.audioUrl.contains(".m3u8")) {
+            androidx.media3.common.MimeTypes.APPLICATION_M3U8
+        } else if (track.audioUrl.contains(".aac")) {
+            androidx.media3.common.MimeTypes.AUDIO_AAC
+        } else {
+            androidx.media3.common.MimeTypes.AUDIO_MPEG
+        }
+
+        val mediaItem = androidx.media3.common.MediaItem.Builder()
+            .setUri(track.audioUrl)
+            .setMimeType(mimeType)
+            .build()
+
+        exoPlayer.setMediaItem(mediaItem)
+        exoPlayer.prepare()
+        if (isPlaying) {
+            exoPlayer.play()
+        } else {
+            if (track.durationSec > 0) {
+                exoPlayer.seekTo(currentSongProgress.toLong() * 1000L)
+            }
+        }
+    }
+
+    // Listen state updates from Compose variable
+    LaunchedEffect(isPlaying) {
+        if (isPlaying) {
+            if (!exoPlayer.isPlaying) {
+                exoPlayer.play()
+            }
+        } else {
+            if (exoPlayer.isPlaying) {
+                exoPlayer.pause()
+            }
+        }
+    }
+
+    // Sync Slider/Progress animation from current active ExoPlayer position or increment locally
+    LaunchedEffect(isPlaying, currentTrackIndex) {
+        if (isPlaying) {
+            while (isPlaying) {
+                val posSeconds = (exoPlayer.currentPosition / 1000).toInt()
+                currentSongProgress = if (posSeconds > 0) posSeconds else (currentSongProgress + 1)
+                delay(500L)
+            }
+        }
+    }
+
+    // Coins Accumulator listener (+10 Coins every 1 minute of aggregate play time)
+    LaunchedEffect(isPlaying) {
+        if (isPlaying) {
+            while (isPlaying) {
+                delay(1000L)
+                totalSecondsListened++
+                if (totalSecondsListened > 0 && totalSecondsListened % 60 == 0) {
+                    coinCount += 10
+                    Toast.makeText(context, "Tahniah! +10 Koin diperoleh kerana mendengar selama 1 minit!", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -242,16 +351,32 @@ fun NeoMusicApp() {
                 ) {
                     // Application Title
                     Column {
-                        Text(
-                            text = "NEOMUSIC",
-                            fontSize = 24.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontFamily = FontFamily.Monospace,
-                            style = TextStyle(
-                                brush = Brush.horizontalGradient(listOf(NeonOrchid, NeonPurple, CyberCyan))
-                            ),
-                            modifier = Modifier.testTag("app_name_title")
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "NEOMUSIC",
+                                fontSize = 24.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontFamily = FontFamily.Monospace,
+                                style = TextStyle(
+                                    brush = Brush.horizontalGradient(listOf(NeonOrchid, NeonPurple, CyberCyan))
+                                ),
+                                modifier = Modifier.testTag("app_name_title")
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(Color.White.copy(alpha = 0.12f))
+                                    .padding(horizontal = 4.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = "v1.0.2",
+                                    fontSize = 10.sp,
+                                    color = NeonGold,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                         Text(
                             text = "Play & Earn Ecosystem",
                             fontSize = 11.sp,
@@ -398,10 +523,16 @@ fun NeoMusicApp() {
                                     // Progress timeline / seek bar
                                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                         // Seek Bar (Slider)
+                                        val maxProgress = if (currentTrack.durationSec > 0) currentTrack.durationSec.toFloat() else maxOf(3600f, currentSongProgress.toFloat() * 1.5f)
                                         Slider(
-                                            value = currentSongProgress.toFloat(),
-                                            onValueChange = { currentSongProgress = it.toInt() },
-                                            valueRange = 0f..currentTrack.durationSec.toFloat(),
+                                            value = minOf(currentSongProgress.toFloat(), maxProgress),
+                                            onValueChange = { newValue ->
+                                                currentSongProgress = newValue.toInt()
+                                                if (currentTrack.durationSec > 0) {
+                                                    exoPlayer.seekTo(newValue.toLong() * 1000L)
+                                                }
+                                            },
+                                            valueRange = 0f..maxProgress,
                                             colors = SliderDefaults.colors(
                                                 thumbColor = currentTrack.accentColor,
                                                 activeTrackColor = currentTrack.accentColor,
@@ -423,8 +554,9 @@ fun NeoMusicApp() {
                                                 fontSize = 11.sp
                                             )
                                             Text(
-                                                text = currentTrack.duration,
-                                                color = DullGrey,
+                                                text = if (currentTrack.durationSec > 0) currentTrack.duration else "LIVE",
+                                                color = if (currentTrack.durationSec > 0) DullGrey else currentTrack.accentColor,
+                                                fontWeight = if (currentTrack.durationSec > 0) FontWeight.Normal else FontWeight.Bold,
                                                 fontSize = 11.sp
                                             )
                                         }
@@ -492,77 +624,149 @@ fun NeoMusicApp() {
                                     modifier = Modifier.padding(start = 4.dp)
                                 )
 
-                                tracksList.forEachIndexed { idx, track ->
-                                    val isCurrent = currentTrackIndex == idx
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .background(if (isCurrent) NeonPurple.copy(alpha = 0.15f) else CardSurface)
-                                            .clickable {
-                                                currentTrackIndex = idx
-                                                currentSongProgress = 0
-                                                isPlaying = true
-                                            }
-                                            .border(
-                                                BorderStroke(
-                                                    0.5.dp,
-                                                    if (isCurrent) NeonPurple else Color.White.copy(alpha = 0.05f)
-                                                ),
-                                                RoundedCornerShape(12.dp)
-                                            )
-                                            .padding(12.dp)
-                                            .testTag("track_item_$idx"),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        // Visual thumbnail
-                                        Box(
-                                            modifier = Modifier
-                                                .size(40.dp)
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .background(track.accentColor.copy(alpha = 0.2f)),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Canvas(modifier = Modifier.size(16.dp)) {
-                                                drawRoundRect(
-                                                    color = track.accentColor,
-                                                    cornerRadius = CornerRadius(2.dp.toPx())
+                                // Search Bar Component (Kotak Carian Premium)
+                                TextField(
+                                    value = searchQuery,
+                                    onValueChange = { searchQuery = it },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .border(
+                                            BorderStroke(1.dp, NeonPurple.copy(alpha = 0.3f)),
+                                            RoundedCornerShape(12.dp)
+                                        )
+                                        .testTag("track_search_bar"),
+                                    placeholder = {
+                                        Text(
+                                            text = "Cari lagu atau artis dunia...",
+                                            color = DullGrey,
+                                            fontSize = 14.sp
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.Search,
+                                            contentDescription = "Search Icon",
+                                            tint = NeonOrchid
+                                        )
+                                    },
+                                    trailingIcon = {
+                                        if (searchQuery.isNotEmpty()) {
+                                            IconButton(onClick = { searchQuery = "" }) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Clear,
+                                                    contentDescription = "Clear Search",
+                                                    tint = DullGrey
                                                 )
                                             }
                                         }
+                                    },
+                                    singleLine = true,
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = TextFieldDefaults.colors(
+                                        focusedContainerColor = Color(0xFF1D0F35),
+                                        unfocusedContainerColor = Color(0xFF110822),
+                                        disabledContainerColor = Color(0xFF110822),
+                                        focusedTextColor = Color.White,
+                                        unfocusedTextColor = Color.White,
+                                        cursorColor = NeonPurple,
+                                        focusedIndicatorColor = Color.Transparent,
+                                        unfocusedIndicatorColor = Color.Transparent,
+                                        disabledIndicatorColor = Color.Transparent
+                                    )
+                                )
 
-                                        Spacer(modifier = Modifier.width(12.dp))
+                                Spacer(modifier = Modifier.height(4.dp))
 
-                                        // Meta column
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = track.title,
-                                                fontSize = 14.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isCurrent) NeonPurple else Color.White
-                                            )
-                                            Text(
-                                                text = track.artist,
-                                                fontSize = 12.sp,
-                                                color = DullGrey
-                                            )
-                                        }
+                                if (filteredTracks.isEmpty()) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 24.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "Tiada lagu ditemui untuk \"$searchQuery\"",
+                                            color = DullGrey,
+                                            fontSize = 14.sp,
+                                            textAlign = TextAlign.Center
+                                        )
+                                    }
+                                } else {
+                                    filteredTracks.forEach { track ->
+                                        val realIndex = tracksList.indexOf(track)
+                                        val isCurrent = currentTrackIndex == realIndex
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(if (isCurrent) NeonPurple.copy(alpha = 0.15f) else CardSurface)
+                                                .clickable {
+                                                    if (realIndex != -1) {
+                                                        currentTrackIndex = realIndex
+                                                        currentSongProgress = 0
+                                                        isPlaying = true
+                                                    }
+                                                }
+                                                .border(
+                                                    BorderStroke(
+                                                        0.5.dp,
+                                                        if (isCurrent) NeonPurple else Color.White.copy(alpha = 0.05f)
+                                                    ),
+                                                    RoundedCornerShape(12.dp)
+                                                )
+                                                .padding(12.dp)
+                                                .testTag("track_item_$realIndex"),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            // Visual thumbnail
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(40.dp)
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(track.accentColor.copy(alpha = 0.2f)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Canvas(modifier = Modifier.size(16.dp)) {
+                                                    drawRoundRect(
+                                                        color = track.accentColor,
+                                                        cornerRadius = CornerRadius(2.dp.toPx())
+                                                    )
+                                                }
+                                            }
 
-                                        // Status or timing
-                                        if (isCurrent && isPlaying) {
-                                            Text(
-                                                text = "SEDANG DIIKUTI",
-                                                fontSize = 10.sp,
-                                                color = NeonPurple,
-                                                fontWeight = FontWeight.Bold,
-                                                letterSpacing = 1.sp
-                                            )
-                                        } else {
-                                            Text(
-                                                text = track.duration,
-                                                fontSize = 12.sp,
-                                                color = DullGrey
-                                            )
+                                            Spacer(modifier = Modifier.width(12.dp))
+
+                                            // Meta column
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = track.title,
+                                                    fontSize = 14.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (isCurrent) NeonPurple else Color.White
+                                                )
+                                                Text(
+                                                    text = track.artist,
+                                                    fontSize = 12.sp,
+                                                    color = DullGrey
+                                                )
+                                            }
+
+                                            // Status or timing
+                                            if (isCurrent && isPlaying) {
+                                                Text(
+                                                    text = "SEDANG DIIKUTI",
+                                                    fontSize = 10.sp,
+                                                    color = NeonPurple,
+                                                    fontWeight = FontWeight.Bold,
+                                                    letterSpacing = 1.sp
+                                                )
+                                            } else {
+                                                Text(
+                                                    text = track.duration,
+                                                    fontSize = 12.sp,
+                                                    color = DullGrey
+                                                )
+                                            }
                                         }
                                     }
                                 }
