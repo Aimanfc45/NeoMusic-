@@ -1,0 +1,45 @@
+# Codemagic CI/CD configuration for NeoMusic
+# Rujukan Dokumentasi: https://docs.codemagic.io/
+
+workflows:
+  android-workflow:
+    name: NeoMusic Android CI/CD Pipeline
+    max_build_duration: 60
+    instance_type: mac_mini_m1 # Boleh juga menggunakan linux_arm64 atau linux untuk binaan yang laju
+    environment:
+      android_ndk: 25.2.9519653
+      java: 17
+      groups:
+        # Masukkan kumpulan pemboleh ubah persekitaran (Environment Variables) jika ada di Dashboard Codemagic
+        - keystore_credentials
+    triggering:
+      events:
+        - push
+        - pull_request
+      branch_patterns:
+        - pattern: '*'
+          include: true
+          source: true
+    scripts:
+      - name: Sediakan fail kebenaran Gradle wrapper
+        script: |
+          chmod +x gradlew
+      - name: Jalankan Unit Tests & Linter Latihan
+        script: |
+          ./gradlew testDebugUnitTest
+      - name: Bina fail APK Debug (Prapapar Pantas)
+        script: |
+          ./gradlew assembleDebug
+      - name: Bina fail Android App Bundle (Release AAB)
+        script: |
+          ./gradlew bundleRelease
+    artifacts:
+      - app/build/outputs/apk/**/*.apk
+      - app/build/outputs/bundle/**/*.aab
+    publishing:
+      email:
+        recipients:
+          - cipmore67@gmail.com
+        notify:
+          success: true
+          failure: true
